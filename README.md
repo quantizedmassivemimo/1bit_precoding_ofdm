@@ -12,6 +12,7 @@ If you are using the simulator (or parts of it) for a publication, then you *mus
 
 [1] S. Jacobsson, O. Castaneda, C. Jeon, G. Durisi, and C. Studer, “Nonlinear precoding for phase-quantized constant-envelope massive MU-MIMO-OFDM,” in IEEE Int. Conf. Telecommunications (ICT), Saint- Malo, France, Jun. 2018, to appear.
 
+
 and clearly mention this in your paper.
 
 ### How to start a simulation

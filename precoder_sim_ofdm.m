@@ -35,6 +35,7 @@ function precoder_sim_ofdm(varargin)
         par.SNRdB_list = -5:2.5:15; % list of SNR [dB] values to be simulated
         par.mod = '16QAM'; % modulation type: 'BPSK', 'QPSK', '8PSK', '16QAM','64QAM'
         par.precoder = {'ZF', 'SQUID', 'ZF_inf'}; % select precoding scheme(s) to be evaluated
+        par.code.rate = 1; % code rate: 1/2, 3/4, 5/6, 1 (set to 1 for uncoded BER only)
 
     else
 
@@ -115,9 +116,48 @@ function precoder_sim_ofdm(varargin)
     par.card = length(par.symbols); % cardinality
     par.bps = log2(par.card); % number of bits per symbol
     par.bits = de2bi(0:par.card-1,par.bps,'left-msb'); % symbols-to-bits
-            
+    
+    % code parameters 
+    if par.code.rate < 1
+        
+        addpath('BCJR'); % add path to decoder
+        
+        par.code.constraintlength = 7; % constraint Length
+        par.code.generator = [133  171]; % generator polynomial      
+        par.code.trellis = poly2trellis(par.code.constraintlength, par.code.generator); % trellis
+        for u=1:par.U
+            par.code.interleaverperm(u,:) = randperm(par.S*par.bps); % random interleaver
+        end
+        par.code.n = par.bps*par.S; % length of code word
+        par.code.m = floor(par.code.n*par.code.rate); % length of message
+        
+        % puncturing pattern
+        switch (par.code.rate) 
+            case 1/2
+              par.code.puncturing.period = 1;
+              par.code.puncturing.pattern = 1;
+            case 3/4
+              par.code.puncturing.period = 18;
+              par.code.puncturing.pattern = [1 2 3 6 7 8 9 12 13 14 15 18];
+            case 5/6
+              par.code.puncturing.period = 10;
+              par.code.puncturing.pattern = [1 2 3 6 7 10];
+            otherwise  
+              error('code rate not supported!')    
+        end
+        
+        % extend puncturing pattern 
+        patlen = length(par.code.puncturing.pattern); 
+        for i=1:ceil(par.code.n/patlen)       
+            par.code.puncturing.index(patlen*(i-1)+1:patlen*i) = ...
+              (i-1)*par.code.puncturing.period+par.code.puncturing.pattern;   
+        end
+        par.code.puncturing.index(:,par.code.n+1:end) = [];
+        
+    end
+    
     % initialize result arrays
-    res.BER_uncoded = zeros(length(par.precoder),length(par.SNRdB_list));
+    [res.BER_uncoded, res.BER_coded] = deal(zeros(length(par.precoder),length(par.SNRdB_list)));
     [res.TxAvgPower, res.TxMaxPower] = deal(zeros(length(par.precoder),1));
     [res.MSE, res.EVM] = deal(zeros(length(par.precoder),par.U,par.trials));
     
@@ -155,12 +195,25 @@ function precoder_sim_ofdm(varargin)
         nf = sqrt(1/par.N)*fft(nt,par.N,2); % frequency domain
 
         % generate random bits and encode them
-        b_data = randi([0 1], par.U, par.bps*par.S); % data bits
+        if par.code.rate < 1
+            
+            par.code.padbits = ceil(par.U*par.S*par.bps*par.code.rate)-floor(par.U*par.S*par.bps*par.code.rate);
+            b_data = randi([0,1], par.U,ceil(par.S*par.bps*par.code.rate));
+            b_data(1:par.U,size(b_data,2)+1-(par.code.constraintlength-1)-par.code.padbits:size(b_data,2)) = 0;
+            b_encoded = nan(par.U, par.code.n); % encoded bits
+            for u = 1:par.U
+                b_trellis = convenc(b_data(u,:),par.code.trellis); % encoding
+                b_punctured = b_trellis(par.code.puncturing.index); % puncturing
+                b_encoded(u,:) = b_punctured(par.code.interleaverperm(u,:)); % interleaving
+            end
+        else
+            b_encoded = randi([0 1], par.U, par.bps*par.S); % data bits
+        end
 
         % map bits to subcarriers
         s = zeros(par.U,par.N);
         for u = 1:par.U
-            idx = reshape(bi2de(reshape(b_data(u,:),par.bps,par.S)','left-msb')+1,par.S,[]); % index
+            idx = reshape(bi2de(reshape(b_encoded(u,:),par.bps,par.S)','left-msb')+1,par.S,[]); % index
             s(u,par.submap) = par.symbols(idx); 
         end
          
@@ -222,15 +275,28 @@ function precoder_sim_ofdm(varargin)
                 % estimated symbols (remove guard carriers and compensate for gain loss)
                 shat = yf(:,par.submap) ./ sqrt(mean(abs(yf(:,par.submap,:)).^2,2) - N0);
                 
-                % symbol detection  
-                b_detected = nan(size(b_data));
-                for u = 1:par.U
-                    [~,idxhat] = min(abs(reshape(shat(u,:,:),[],1)*ones(1,length(par.symbols))-ones(par.S,1)*par.symbols).^2,[],2);
-                    b_detected(u,:) = reshape(par.bits(idxhat,:)',1,[]);
+                % symbol detection
+                if par.code.rate == 1 % nearest-neighbor decoding
+                    
+                    b_detected = nan(size(b_encoded));
+                    for u = 1:par.U
+                        [~,idxhat] = min(abs(reshape(shat(u,:,:),[],1)*ones(1,length(par.symbols))-ones(par.S,1)*par.symbols).^2,[],2);
+                        b_detected(u,:) = reshape(par.bits(idxhat,:)',1,[]);
+                    end
+                    
+                else % log-max BCJR decoding
+                    
+                    llr = detector(par,shat,N0);
+                    b_detected = (llr>0);
+                    [~,b_decoded] = decoder(par,llr);
+                    
                 end
                 
                 % compute bit error rate
-                res.BER_uncoded(pp,ss) = res.BER_uncoded(pp,ss) + sum(sum(b_data~=b_detected))/par.U/par.bps/par.S/par.trials;
+                res.BER_uncoded(pp,ss) = res.BER_uncoded(pp,ss) + sum(sum(b_encoded~=b_detected))/par.U/par.bps/par.S/par.trials;
+                if par.code.rate < 1
+                    res.BER_coded(pp,ss) = res.BER_coded(pp,ss) + sum(sum(b_data~=b_decoded))/par.U/par.code.m/par.trials;
+                end
                 
                 % compute average MSE and EVM per UE
                 res.MSE(pp,:,tt) = mean(abs(beta*Hxf(:,par.submap) - s(:,par.submap)).^2,2);
@@ -371,6 +437,24 @@ function precoder_sim_ofdm(varargin)
         end
         legend(precoder_legend,'FontSize',12,'location','southwest')
         set(gca,'FontSize',12);
+        
+        % plot coded BER
+        if par.code.rate < 1
+            
+            fig_codedber = figure; set(fig_codedber,'name','Coded BER','numbertitle','off');
+            for pp=1:length(par.precoder) % simulated BER
+                semilogy(par.SNRdB_list,res.BER_coded(pp,:),marker_style{pp},'color',marker_color(pp,:),'LineWidth',2); hold on;
+            end
+            grid on; box on;
+            xlabel('SNR [dB]','FontSize',12)
+            ylabel('coded BER','FontSize',12);
+            if length(par.SNRdB_list) > 1
+                axis([min(par.SNRdB_list) max(par.SNRdB_list) 1e-6 1]);
+            end
+            legend(precoder_legend,'FontSize',12,'location','southwest')
+            set(gca,'FontSize',12);
+            
+        end
         
     end
         
@@ -577,6 +661,69 @@ function [xf, beta] = SQUID(par,s,Hf,N0)
 end
 
 % -- auxilliary functions
+
+% soft-output data detection using the max-log approximation.
+function llr = detector(par,shat,N0)
+
+    % initialization 
+    llr = nan(par.U, par.S*par.bps);
+    bin_array = sign(par.bits-.5);
+   
+    % perform detection for each terminal
+    for u = 1:par.U
+        for k = 1:par.S
+        
+            % compute distance metric
+            metrics = abs(shat(u,k)-par.symbols).^2/N0;
+
+            % compute max-log LLRs
+            for b = 1:par.bps
+                
+                pmin = inf; 
+                nmin = inf;
+                
+                for z = 1:2^par.bps         
+                    if bin_array(z,b)==1
+                        pmin = min(pmin,metrics(z));
+                    else
+                        nmin = min(nmin,metrics(z));          
+                    end                                
+                end
+                
+                % log-likelihood ratio
+                llr(u,(k-1)*par.bps+b) = nmin-pmin;
+                
+            end 
+
+        end
+
+    end  
+  
+end
+
+% deinterleaving, depuncturing, and decoding using the BCJR algorithm
+function [llr_out,bhat] = decoder(par,llr_in)
+
+    % initialization
+    llr_temp = nan(1,size(llr_in,2));
+    llr_out = nan(par.U, 2*par.code.m);
+    bhat = nan(par.U, par.code.m);
+
+    for u = 1:par.U
+
+        % deinterleaving
+        llr_temp(1,par.code.interleaverperm(u,:)) = llr_in(u,:);   
+
+        % depuncturing
+        llr_punctured = zeros(1,2*length(llr_temp(1,:))*par.code.rate);    
+        llr_punctured(par.code.puncturing.index) = llr_temp;
+        
+        % decoding
+        [llr_out(u,:),bhat(u,:)] = BCJR(par.code.trellis,llr_punctured); 
+
+    end
+  
+end
 
 % phase quantization 
 function xt = phase_quantizer(par, zt)
