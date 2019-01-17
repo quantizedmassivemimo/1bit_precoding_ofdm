@@ -10,8 +10,7 @@ The software package is supplied "as is," without any accompanying support servi
 
 If you are using the simulator (or parts of it) for a publication, then you *must* cite our paper:
 
-[1] S. Jacobsson, O. Castaneda, C. Jeon, G. Durisi, and C. Studer, “Nonlinear precoding for phase-quantized constant-envelope massive MU-MIMO-OFDM,” in IEEE Int. Conf. Telecommunications (ICT), Saint- Malo, France, Jun. 2018, to appear.
-
+[1] S. Jacobsson, O. Castañeda, C. Jeon, G. Durisi, and C. Studer, “Nonlinear precoding for phase-quantized constant-envelope massive MU-MIMO-OFDM,” in Proc. IEEE Int. Conf. Telecommunications (ICT), St. Malo, France, Jun. 2018, pp. 367–372.
 
 and clearly mention this in your paper.
 
